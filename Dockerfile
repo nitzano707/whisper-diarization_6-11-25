@@ -1,28 +1,33 @@
-FROM python:3.10-slim
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+
+# התקנת Python 3.10
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
+    ffmpeg \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# קישור python3 ל-python
+RUN ln -s /usr/bin/python3.10 /usr/bin/python
 
 WORKDIR /app
 
-# התקנת תלות מערכת
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    git \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# העתקת קוד
 COPY main.py .
 
 # שדרוג pip
-RUN pip install --no-cache-dir --upgrade pip
+RUN pip3 install --no-cache-dir --upgrade pip
 
-# התקנת WhisperX ותלות
-RUN pip install --no-cache-dir \
+# התקנת חבילות
+RUN pip3 install --no-cache-dir \
+    torch==2.4.0 \
+    torchaudio==2.4.0 \
     git+https://github.com/m-bain/whisperx.git \
     runpod==1.6.2 \
     requests
 
 # בדיקה
-RUN python -c "import whisperx; print('✅ WhisperX installed')"
+RUN python -c "import whisperx; print('✅ OK')"
 
 EXPOSE 8000
 
