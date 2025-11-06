@@ -2,15 +2,14 @@ import os
 import runpod
 import requests
 import tempfile
-from faster_whisper import WhisperModel
+import whisper
 from pyannote.audio import Pipeline
 
-print("🚀 Loading models...")
+print("🚀 Loading Whisper model...")
+whisper_model = whisper.load_model("base")
+print("✅ Whisper loaded")
 
-# Faster Whisper - קל וזריז
-whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
-
-# Pyannote
+print("🚀 Loading Diarization...")
 HF_TOKEN = os.getenv("HF_TOKEN")
 diarization_pipeline = None
 if HF_TOKEN:
@@ -20,10 +19,10 @@ if HF_TOKEN:
             use_auth_token=HF_TOKEN
         )
         print("✅ Diarization loaded")
-    except:
-        print("⚠️  Diarization failed to load")
-
-print("✅ Models ready")
+    except Exception as e:
+        print(f"⚠️  Diarization failed: {e}")
+else:
+    print("⚠️  No HF_TOKEN - diarization disabled")
 
 def handler(event):
     try:
@@ -46,28 +45,20 @@ def handler(event):
         
         print(f"✅ Downloaded: {os.path.getsize(audio_path)} bytes")
         
-        # תמלול עם Faster Whisper
+        # תמלול
         print("🎙️  Transcribing...")
-        segments, info = whisper_model.transcribe(
-            audio_path, 
-            language=language,
-            beam_size=5
-        )
-        
-        # איסוף segments
-        all_segments = []
-        transcription_parts = []
-        
-        for segment in segments:
-            all_segments.append({
-                "start": round(segment.start, 2),
-                "end": round(segment.end, 2),
-                "text": segment.text.strip()
-            })
-            transcription_parts.append(segment.text)
-        
-        transcription = " ".join(transcription_parts)
+        result = whisper_model.transcribe(audio_path, language=language, fp16=False)
+        transcription = result["text"]
         print(f"✅ Transcribed: {len(transcription)} chars")
+        
+        # Segments בסיסיים
+        segments = []
+        for seg in result.get("segments", []):
+            segments.append({
+                "start": round(seg["start"], 2),
+                "end": round(seg["end"], 2),
+                "text": seg["text"].strip()
+            })
         
         speakers = []
         
@@ -77,13 +68,12 @@ def handler(event):
                 print("👥 Diarizing...")
                 diarization = diarization_pipeline(audio_path)
                 
-                # שיוך דוברים ל-segments
-                for segment in all_segments:
-                    # מצא את הדובר הדומיננטי בזמן הזה
+                # שיוך דוברים
+                for segment in segments:
                     seg_start = segment["start"]
                     seg_end = segment["end"]
-                    seg_duration = seg_end - seg_start
                     
+                    # מצא דובר דומיננטי
                     speaker_times = {}
                     for turn, _, speaker in diarization.itertracks(yield_label=True):
                         overlap_start = max(turn.start, seg_start)
@@ -93,21 +83,19 @@ def handler(event):
                         if overlap > 0:
                             speaker_times[speaker] = speaker_times.get(speaker, 0) + overlap
                     
-                    # בחר דובר עם הכי הרבה זמן
                     if speaker_times:
-                        dominant_speaker = max(speaker_times, key=speaker_times.get)
-                        segment["speaker"] = dominant_speaker
+                        segment["speaker"] = max(speaker_times, key=speaker_times.get)
                     else:
                         segment["speaker"] = "SPEAKER_00"
                 
-                speakers = all_segments
-                print(f"✅ Assigned speakers")
+                speakers = segments
+                print(f"✅ Found {len(set([s.get('speaker', 'UNKNOWN') for s in speakers]))} speakers")
                 
             except Exception as e:
                 print(f"⚠️  Diarization failed: {e}")
-                speakers = all_segments
+                speakers = segments
         else:
-            speakers = all_segments
+            speakers = segments
         
         # ניקוי
         try:
@@ -128,5 +116,7 @@ def handler(event):
         return {"error": str(e), "status": "error"}
 
 if __name__ == "__main__":
-    print("🚀 Faster-Whisper Worker Starting")
+    print("=" * 50)
+    print("🚀 Whisper + Diarization Worker")
+    print("=" * 50)
     runpod.serverless.start({"handler": handler})
