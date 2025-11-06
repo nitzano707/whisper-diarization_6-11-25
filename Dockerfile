@@ -12,14 +12,17 @@ COPY main.py .
 
 RUN pip install --no-cache-dir --upgrade pip
 
-# Faster Whisper - קל וזריז!
+# Whisper + Pyannote - פשוט ועובד!
 RUN pip install --no-cache-dir \
-    faster-whisper \
-    pyannote.audio==3.3.2 \
+    openai-whisper \
+    pyannote.audio \
     runpod==1.6.2 \
     requests
 
 RUN pip cache purge
+
+# הורדת מודל Whisper מראש
+RUN python -c "import whisper; whisper.load_model('base')"
 
 EXPOSE 8000
 
