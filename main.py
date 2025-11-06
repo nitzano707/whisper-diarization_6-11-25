@@ -2,14 +2,28 @@ import os
 import runpod
 import requests
 import tempfile
-import whisperx
-import torch
-import gc
+from faster_whisper import WhisperModel
+from pyannote.audio import Pipeline
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-compute_type = "float16" if device == "cuda" else "int8"
+print("🚀 Loading models...")
 
-print(f"🖥️  Device: {device}")
+# Faster Whisper - קל וזריז
+whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+
+# Pyannote
+HF_TOKEN = os.getenv("HF_TOKEN")
+diarization_pipeline = None
+if HF_TOKEN:
+    try:
+        diarization_pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=HF_TOKEN
+        )
+        print("✅ Diarization loaded")
+    except:
+        print("⚠️  Diarization failed to load")
+
+print("✅ Models ready")
 
 def handler(event):
     try:
@@ -23,7 +37,6 @@ def handler(event):
         
         print(f"📥 Downloading: {file_url}")
         
-        # הורדה
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
             response = requests.get(file_url, timeout=300)
             response.raise_for_status()
@@ -33,65 +46,68 @@ def handler(event):
         
         print(f"✅ Downloaded: {os.path.getsize(audio_path)} bytes")
         
-        # תמלול
+        # תמלול עם Faster Whisper
         print("🎙️  Transcribing...")
-        model = whisperx.load_model("base", device, compute_type=compute_type, language=language)
-        audio = whisperx.load_audio(audio_path)
-        result = model.transcribe(audio, batch_size=16)
+        segments, info = whisper_model.transcribe(
+            audio_path, 
+            language=language,
+            beam_size=5
+        )
         
-        transcription = " ".join([seg["text"] for seg in result["segments"]])
+        # איסוף segments
+        all_segments = []
+        transcription_parts = []
+        
+        for segment in segments:
+            all_segments.append({
+                "start": round(segment.start, 2),
+                "end": round(segment.end, 2),
+                "text": segment.text.strip()
+            })
+            transcription_parts.append(segment.text)
+        
+        transcription = " ".join(transcription_parts)
         print(f"✅ Transcribed: {len(transcription)} chars")
-        
-        # שחרור זיכרון
-        del model
-        gc.collect()
-        torch.cuda.empty_cache() if device == "cuda" else None
         
         speakers = []
         
         # דיאריזציה
-        if do_diarize:
-            HF_TOKEN = os.getenv("HF_TOKEN")
-            if HF_TOKEN:
-                try:
-                    print("🔍 Aligning...")
-                    model_a, metadata = whisperx.load_align_model(
-                        language_code=language, 
-                        device=device
-                    )
-                    result = whisperx.align(
-                        result["segments"], 
-                        model_a, 
-                        metadata, 
-                        audio, 
-                        device
-                    )
+        if do_diarize and diarization_pipeline:
+            try:
+                print("👥 Diarizing...")
+                diarization = diarization_pipeline(audio_path)
+                
+                # שיוך דוברים ל-segments
+                for segment in all_segments:
+                    # מצא את הדובר הדומיננטי בזמן הזה
+                    seg_start = segment["start"]
+                    seg_end = segment["end"]
+                    seg_duration = seg_end - seg_start
                     
-                    # שחרור זיכרון
-                    del model_a
-                    gc.collect()
-                    torch.cuda.empty_cache() if device == "cuda" else None
+                    speaker_times = {}
+                    for turn, _, speaker in diarization.itertracks(yield_label=True):
+                        overlap_start = max(turn.start, seg_start)
+                        overlap_end = min(turn.end, seg_end)
+                        overlap = max(0, overlap_end - overlap_start)
+                        
+                        if overlap > 0:
+                            speaker_times[speaker] = speaker_times.get(speaker, 0) + overlap
                     
-                    print("👥 Diarizing...")
-                    diarize_model = whisperx.DiarizationPipeline(
-                        use_auth_token=HF_TOKEN, 
-                        device=device
-                    )
-                    diarize_segments = diarize_model(audio)
-                    result = whisperx.assign_word_speakers(diarize_segments, result)
-                    
-                    for seg in result["segments"]:
-                        speakers.append({
-                            "speaker": seg.get("speaker", "UNKNOWN"),
-                            "start": round(seg["start"], 2),
-                            "end": round(seg["end"], 2),
-                            "text": seg["text"].strip()
-                        })
-                    
-                    print(f"✅ Found {len(set([s['speaker'] for s in speakers]))} speakers")
-                    
-                except Exception as e:
-                    print(f"⚠️  Diarization failed: {e}")
+                    # בחר דובר עם הכי הרבה זמן
+                    if speaker_times:
+                        dominant_speaker = max(speaker_times, key=speaker_times.get)
+                        segment["speaker"] = dominant_speaker
+                    else:
+                        segment["speaker"] = "SPEAKER_00"
+                
+                speakers = all_segments
+                print(f"✅ Assigned speakers")
+                
+            except Exception as e:
+                print(f"⚠️  Diarization failed: {e}")
+                speakers = all_segments
+        else:
+            speakers = all_segments
         
         # ניקוי
         try:
@@ -108,26 +124,9 @@ def handler(event):
         
     except Exception as e:
         import traceback
-        error_details = traceback.format_exc()
-        print(f"❌ Error:\n{error_details}")
-        return {
-            "error": str(e),
-            "status": "error"
-        }
+        print(traceback.format_exc())
+        return {"error": str(e), "status": "error"}
 
 if __name__ == "__main__":
-    print("🚀 WhisperX Worker Starting")
+    print("🚀 Faster-Whisper Worker Starting")
     runpod.serverless.start({"handler": handler})
-```
-
----
-
-## ⚙️ **הגדרות Runpod - חשוב מאוד!**
-
-בעת יצירת Endpoint, הגדר:
-```
-Container Disk: 20 GB
-GPU: RTX 4090 או A40
-Execution Timeout: 300 (5 דקות)
-Max Workers: 3
-Min Workers: 0
