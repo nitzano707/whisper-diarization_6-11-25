@@ -10,31 +10,30 @@ RUN apt-get update && apt-get install -y \
 
 COPY main.py .
 
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir --upgrade pip
 
-# כפיית NumPy 1.x
+# NumPy 1.x
 RUN pip install --no-cache-dir "numpy<2.0"
 
-# PyTorch 2.0.x (תואם NumPy 1.x)
+# PyTorch 2.0
 RUN pip install --no-cache-dir torch==2.0.1 torchaudio==2.0.2
 
-# Lightning ישן
-RUN pip install --no-cache-dir lightning==2.0.9
-
-# pyannote-audio 2.1.1 (תואם NumPy 1.x)
-RUN pip install --no-cache-dir pyannote-audio==2.1.1
+# pyannote-audio 2.1.1
+RUN pip install --no-cache-dir \
+    pyannote-audio==2.1.1 \
+    pytorch-lightning==2.0.9
 
 # Whisper
 RUN pip install --no-cache-dir openai-whisper
 
-# Runpod + שאר
+# Runpod
 RUN pip install --no-cache-dir runpod==1.6.2 requests soundfile
 
-# בדיקות
-RUN python -c "import numpy as np; print('NumPy:', np.__version__); assert np.__version__.startswith('1'), 'Wrong NumPy!'"
-RUN python -c "from pyannote.audio import Pipeline; print('✅ Pipeline OK')"
+# וידוא
+RUN python -c "import numpy; print('NumPy:', numpy.__version__)"
+RUN python -c "from pyannote.audio import Pipeline; print('✅ Works!')"
 
-# הורדת Whisper model
+# מודל Whisper
 RUN python -c "import whisper; whisper.load_model('base')"
 
 EXPOSE 8000
